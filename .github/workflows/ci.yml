@@ -17,10 +17,14 @@ jobs:
     env:
       FORCE_BUILD: true
     steps:
-    - uses: actions/checkout@v2
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v1
+    - name: Checkout code
+      uses: actions/checkout@master
+    - name: Update diagram
+      uses: githubocto/repo-visualizer@main
       with:
-        node-version: ${{ matrix.node-version }}
-    - run: npm install
-    - run: npm test
+        output_file: 'diagram.svg'
+        excluded_paths: 'dist,node_modules'
+    - uses: actions/upload-artifact@v2
+      with:
+        name: my-artifact
+        path: diagram.svg
