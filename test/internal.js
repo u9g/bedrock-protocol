@@ -1,21 +1,20 @@
-// process.env.DEBUG = 'minecraft-protocol raknet'
 const { Server, Client } = require('../')
-const { dumpPackets, hasDumps } = require('../tools/genPacketDumps')
+const { dumpPackets } = require('../tools/genPacketDumps')
 const DataProvider = require('../data/provider')
+const { ping } = require('../src/createClient')
+const { CURRENT_VERSION } = require('../src/options')
 
 // First we need to dump some packets that a vanilla server would send a vanilla
 // client. Then we can replay those back in our custom server.
 function prepare (version) {
-  if (!hasDumps(version)) {
-    return dumpPackets(version)
-  }
+  return dumpPackets(version)
 }
 
-async function startTest (version = '1.16.210', ok) {
+async function startTest (version = CURRENT_VERSION, ok) {
   await prepare(version)
   const Item = require('../types/Item')(version)
   const port = 19130
-  const server = new Server({ hostname: '0.0.0.0', port, version })
+  const server = new Server({ host: '0.0.0.0', port, version, offline: true })
 
   function getPath (packetPath) {
     return DataProvider(server.options.protocolVersion).getPath(packetPath)
@@ -28,6 +27,9 @@ async function startTest (version = '1.16.210', ok) {
   server.listen()
   console.log('Started server')
 
+  const pongData = await ping({ host: '127.0.0.1', port })
+  console.assert(pongData, 'did not get valid pong data from server')
+
   const respawnPacket = get('packets/respawn.json')
   const chunks = await requestChunks(respawnPacket.x, respawnPacket.z, 1)
 
@@ -36,7 +38,7 @@ async function startTest (version = '1.16.210', ok) {
   // server logic
   server.on('connect', client => {
     client.on('join', () => {
-      console.log('Client joined', client.getData())
+      console.log('Client joined server', client.getUserData())
 
       client.write('resource_packs_info', {
         must_accept: false,
@@ -106,7 +108,7 @@ async function startTest (version = '1.16.210', ok) {
 
   // client logic
   const client = new Client({
-    hostname: '127.0.0.1',
+    host: '127.0.0.1',
     port,
     username: 'Notch',
     version,
@@ -138,11 +140,14 @@ async function startTest (version = '1.16.210', ok) {
     setTimeout(() => {
       client.close()
 
-      server.close()
-      ok?.()
+      server.close().then(() => {
+        ok?.()
+      })
     }, 500)
     clearInterval(loop)
   })
+
+  client.connect()
 }
 
 const { ChunkColumn, Version } = require('bedrock-provider')
@@ -191,7 +196,7 @@ async function requestChunks (x, z, radius) {
   return chunks
 }
 
-async function timedTest (version, timeout = 1000 * 120) {
+async function timedTest (version, timeout = 1000 * 220) {
   await waitFor((res) => {
     startTest(version, res)
   }, timeout, () => {

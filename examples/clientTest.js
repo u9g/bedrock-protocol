@@ -4,11 +4,12 @@ const { ChunkColumn, Version } = require('bedrock-provider')
 
 async function test () {
   const client = new Client({
-    hostname: '127.0.0.1',
+    host: '127.0.0.1',
     port: 19132
     // You can specify version by adding :
     // version: '1.16.210'
   })
+  client.connect()
 
   client.once('resource_packs_info', (packet) => {
     client.write('resource_pack_client_response', {

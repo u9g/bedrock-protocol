@@ -1,0 +1,11 @@
+- name: Checkout code
+  uses: actions/checkout@master
+- name: Update diagram
+  uses: githubocto/repo-visualizer@main
+  with:
+    output_file: 'diagram.svg'
+    excluded_paths: 'dist,node_modules'
+- uses: actions/upload-artifact@v2
+  with:
+    name: my-artifact
+    path: diagram.svg

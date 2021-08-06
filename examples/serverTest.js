@@ -16,24 +16,24 @@ const DataProvider = require('../data/provider')
 const { waitFor } = require('../src/datatypes/util')
 const { loadWorld } = require('./serverChunks')
 
-async function startServer (version = '1.16.210', ok) {
+async function startServer (version = '1.16.220', ok) {
   if (!hasDumps(version)) {
     throw Error('You need to dump some packets first. Run tools/genPacketDumps.js')
   }
 
   const Item = require('../types/Item')(version)
   const port = 19132
-  const server = new Server({ hostname: '0.0.0.0', port, version })
+  const server = new Server({ host: '0.0.0.0', port, version })
   let loop
 
   const getPath = (packetPath) => DataProvider(server.options.protocolVersion).getPath(packetPath)
-  const get = (packetPath) => require(getPath('sample/' + packetPath))
+  const get = (packetName) => require(getPath(`sample/packets/${packetName}.json`))
 
   server.listen()
   console.log('Started server')
 
   // Find the center position from the dumped packets
-  const respawnPacket = get('packets/respawn.json')
+  const respawnPacket = get('respawn')
   const world = await loadWorld(version)
   const chunks = await world.requestChunks(respawnPacket.x, respawnPacket.z, 2)
 
@@ -41,7 +41,7 @@ async function startServer (version = '1.16.210', ok) {
   server.on('connect', client => {
     // Join is emitted after the client has been authenticated and encryption has started
     client.on('join', () => {
-      console.log('Client joined', client.getData())
+      console.log('Client joined', client.getUserData())
 
       // ResourcePacksInfo is sent by the server to inform the client on what resource packs the server has. It
       // sends a list of the resource packs it has and basic information on them like the version and description.
@@ -71,25 +71,25 @@ async function startServer (version = '1.16.210', ok) {
           client.queue('inventory_slot', { window_id: 120, slot: 0, item: new Item().toBedrock() })
         }
 
-        client.write('player_list', get('packets/player_list.json'))
-        client.write('start_game', get('packets/start_game.json'))
-        client.write('item_component', { entries: [] })
-        client.write('set_spawn_position', get('packets/set_spawn_position.json'))
-        client.write('set_time', { time: 5433771 })
-        client.write('set_difficulty', { difficulty: 1 })
-        client.write('set_commands_enabled', { enabled: true })
-        client.write('adventure_settings', get('packets/adventure_settings.json'))
-        client.write('biome_definition_list', get('packets/biome_definition_list.json'))
-        client.write('available_entity_identifiers', get('packets/available_entity_identifiers.json'))
-        client.write('update_attributes', get('packets/update_attributes.json'))
-        client.write('creative_content', get('packets/creative_content.json'))
-        client.write('inventory_content', get('packets/inventory_content.json'))
-        client.write('player_hotbar', { selected_slot: 3, window_id: 'inventory', select_slot: true })
-        client.write('crafting_data', get('packets/crafting_data.json'))
-        client.write('available_commands', get('packets/available_commands.json'))
-        client.write('chunk_radius_update', { chunk_radius: 1 })
-        client.write('game_rules_changed', get('packets/game_rules_changed.json'))
-        client.write('respawn', get('packets/respawn.json'))
+        client.queue('player_list', get('player_list'))
+        client.queue('start_game', get('start_game'))
+        client.queue('item_component', { entries: [] })
+        client.queue('set_spawn_position', get('set_spawn_position'))
+        client.queue('set_time', { time: 5433771 })
+        client.queue('set_difficulty', { difficulty: 1 })
+        client.queue('set_commands_enabled', { enabled: true })
+        client.queue('adventure_settings', get('adventure_settings'))
+        client.queue('biome_definition_list', get('biome_definition_list'))
+        client.queue('available_entity_identifiers', get('available_entity_identifiers'))
+        client.queue('update_attributes', get('update_attributes'))
+        client.queue('creative_content', get('creative_content'))
+        client.queue('inventory_content', get('inventory_content'))
+        client.queue('player_hotbar', { selected_slot: 3, window_id: 'inventory', select_slot: true })
+        client.queue('crafting_data', get('crafting_data'))
+        client.queue('available_commands', get('available_commands'))
+        client.queue('chunk_radius_update', { chunk_radius: 1 })
+        client.queue('game_rules_changed', get('game_rules_changed'))
+        client.queue('respawn', get('respawn'))
 
         for (const chunk of chunks) {
           client.queue('level_chunk', chunk)

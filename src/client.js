@@ -1,15 +1,13 @@
 const { ClientStatus, Connection } = require('./connection')
 const { createDeserializer, createSerializer } = require('./transforms/serializer')
-const { RakClient } = require('./rak')
-const { serialize } = require('./datatypes/util')
-const fs = require('fs')
+const { serialize, isDebug } = require('./datatypes/util')
 const debug = require('debug')('minecraft-protocol')
 const Options = require('./options')
 const auth = require('./client/auth')
 
-const { Encrypt } = require('./auth/encryption')
-const Login = require('./auth/login')
-const LoginVerify = require('./auth/loginVerify')
+const { KeyExchange } = require('./handshake/keyExchange')
+const Login = require('./handshake/login')
+const LoginVerify = require('./handshake/loginVerify')
 
 const debugging = false
 
@@ -17,39 +15,49 @@ class Client extends Connection {
   // The RakNet connection
   connection
 
-  /** @param {{ version: number, hostname: string, port: number }} options */
+  /** @param {{ version: number, host: string, port: number }} options */
   constructor (options) {
     super()
     this.options = { ...Options.defaultOptions, ...options }
     this.validateOptions()
+
+    const { RakClient } = require('./rak')(this.options.useNativeRaknet)
+
     this.serializer = createSerializer(this.options.version)
     this.deserializer = createDeserializer(this.options.version)
 
-    Encrypt(this, null, this.options)
+    KeyExchange(this, null, this.options)
     Login(this, null, this.options)
     LoginVerify(this, null, this.options)
 
-    this.on('session', this.connect)
-
-    if (options.offline) {
-      console.debug('offline mode, not authenticating', this.options)
-      auth.createOfflineSession(this, this.options)
-    } else if (options.password) {
-      auth.authenticatePassword(this, this.options)
-    } else {
-      auth.authenticateDeviceCode(this, this.options)
-    }
+    const host = this.options.host
+    const port = this.options.port
+    this.connection = new RakClient({ useWorkers: this.options.useRaknetWorkers, host, port })
 
     this.startGameData = {}
     this.clientRuntimeId = null
 
+    if (isDebug) {
+      this.inLog = (...args) => debug('C ->', ...args)
+      this.outLog = (...args) => debug('C <-', ...args)
+    }
+  }
+
+  connect () {
+    this.on('session', this._connect)
+
+    if (this.options.offline) {
+      debug('offline mode, not authenticating', this.options)
+      auth.createOfflineSession(this, this.options)
+    } else {
+      auth.authenticateDeviceCode(this, this.options)
+    }
+
     this.startQueue()
-    this.inLog = (...args) => debug('C ->', ...args)
-    this.outLog = (...args) => debug('C <-', ...args)
   }
 
   validateOptions () {
-    if (!this.options.hostname || this.options.port == null) throw Error('Invalid hostname/port')
+    if (!this.options.host || this.options.port == null) throw Error('Invalid host/port')
 
     if (!Options.Versions[this.options.version]) {
       console.warn('Supported versions: ', Options.Versions)
@@ -70,18 +78,23 @@ class Client extends Connection {
     this.handle(buffer)
   }
 
-  connect = async (sessionData) => {
-    const hostname = this.options.hostname
-    const port = this.options.port
-    debug('[client] connecting to', hostname, port, sessionData)
+  async ping () {
+    try {
+      return await this.connection.ping(this.options.connectTimeout)
+    } catch (e) {
+      console.warn(`Unable to connect to [${this.options.host}]/${this.options.port}. Is the server running?`)
+      throw e
+    }
+  }
 
-    this.connection = new RakClient({ useWorkers: true, hostname, port })
+  _connect = async (sessionData) => {
+    debug('[client] connecting to', this.options.host, this.options.port, sessionData, this.connection)
     this.connection.onConnected = () => this.sendLogin()
     this.connection.onCloseConnection = () => this.close()
     this.connection.onEncapsulated = this.onEncapsulated
     this.connection.connect()
 
-    this.connectTimer = setTimeout(() => {
+    this.connectTimeout = setTimeout(() => {
       if (this.status === ClientStatus.Disconnected) {
         this.connection.close()
         this.emit('error', 'connect timed out')
@@ -99,22 +112,23 @@ class Client extends Connection {
     ]
 
     const encodedChain = JSON.stringify({ chain })
-    const bodyLength = this.clientUserChain.length + encodedChain.length + 8
 
     debug('Auth chain', chain)
 
     this.write('login', {
       protocol_version: this.options.protocolVersion,
-      payload_size: bodyLength,
-      chain: encodedChain,
-      client_data: this.clientUserChain
+      tokens: {
+        identity: encodedChain,
+        client: this.clientUserChain
+      }
     })
     this.emit('loggingIn')
   }
 
   onDisconnectRequest (packet) {
-    console.warn(`C Server requested ${packet.hide_disconnect_reason ? 'silent disconnect' : 'disconnect'}: ${packet.message}`)
+    console.warn(`Server requested ${packet.hide_disconnect_reason ? 'silent disconnect' : 'disconnect'}: ${packet.message}`)
     this.emit('kick', packet)
+    this.close()
   }
 
   onPlayStatus (statusPacket) {
@@ -128,43 +142,34 @@ class Client extends Connection {
   }
 
   close () {
-    this.emit('close')
+    if (this.status !== ClientStatus.Disconnected) {
+      this.emit('close') // Emit close once
+      debug('Client closed!')
+    }
     clearInterval(this.loop)
     clearTimeout(this.connectTimeout)
     this.q = []
     this.q2 = []
     this.connection?.close()
     this.removeAllListeners()
-    console.log('Client closed!')
-  }
-
-  tryRencode (name, params, actual) {
-    const packet = this.serializer.createPacketBuffer({ name, params })
-
-    console.assert(packet.toString('hex') === actual.toString('hex'))
-    if (packet.toString('hex') !== actual.toString('hex')) {
-      const ours = packet.toString('hex').match(/.{1,16}/g).join('\n')
-      const theirs = actual.toString('hex').match(/.{1,16}/g).join('\n')
-
-      fs.writeFileSync('ours.txt', ours)
-      fs.writeFileSync('theirs.txt', theirs)
-      fs.writeFileSync('ours.json', serialize(params))
-      fs.writeFileSync('theirs.json', serialize(this.deserializer.parsePacketBuffer(packet).data.params))
-
-      throw new Error(name + ' Packet comparison failed!')
-    }
+    this.status = ClientStatus.Disconnected
   }
 
   readPacket (packet) {
-    const des = this.deserializer.parsePacketBuffer(packet)
+    try {
+      var des = this.deserializer.parsePacketBuffer(packet) // eslint-disable-line
+    } catch (e) {
+      this.emit('error', e)
+      return
+    }
     const pakData = { name: des.data.name, params: des.data.params }
-    this.inLog('-> C', pakData.name/*, serialize(pakData.params).slice(0, 100) */)
+    this.inLog?.('-> C', pakData.name, this.options.loggging ? serialize(pakData.params) : '')
     this.emit('packet', des)
 
     if (debugging) {
       // Packet verifying (decode + re-encode + match test)
       if (pakData.name) {
-        this.tryRencode(pakData.name, pakData.params, packet)
+        this.deserializer.verify(packet, this.serializer)
       }
     }
 
@@ -174,17 +179,30 @@ class Client extends Connection {
         this.emit('client.server_handshake', des.data.params)
         break
       case 'disconnect': // Client kicked
+        this.emit(des.data.name, des.data.params) // Emit before we kill all listeners.
         this.onDisconnectRequest(des.data.params)
         break
       case 'start_game':
         this.startGameData = pakData.params
+        this.startGameData.itemstates.forEach(state => {
+          if (state.name === 'minecraft:shield') {
+            this.serializer.proto.setVariable('ShieldItemID', state.runtime_id)
+            this.deserializer.proto.setVariable('ShieldItemID', state.runtime_id)
+          }
+        })
         break
       case 'play_status':
+        if (this.status === ClientStatus.Authenticating) {
+          this.inLog?.('Server wants to skip encryption')
+          this.emit('join')
+          this.status = ClientStatus.Initializing
+        }
         this.onPlayStatus(pakData.params)
         break
       default:
         if (this.status !== ClientStatus.Initializing && this.status !== ClientStatus.Initialized) {
-          this.inLog(`Can't accept ${des.data.name}, client not yet authenticated : ${this.status}`)
+          // TODO: standardjs bug happens here with ?.(`something ${des.data.name}`)
+          if (this.inLog) this.inLog(`Can't accept ${des.data.name}, client not yet authenticated : ${this.status}`)
           return
         }
     }

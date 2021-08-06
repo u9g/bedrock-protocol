@@ -1,11 +1,11 @@
 const { ClientStatus, Connection } = require('./connection')
-const fs = require('fs')
 const Options = require('./options')
+const { serialize, isDebug } = require('./datatypes/util')
+const { KeyExchange } = require('./handshake/keyExchange')
+const Login = require('./handshake/login')
+const LoginVerify = require('./handshake/loginVerify')
+const fs = require('fs')
 const debug = require('debug')('minecraft-protocol')
-
-const { Encrypt } = require('./auth/encryption')
-const Login = require('./auth/login')
-const LoginVerify = require('./auth/loginVerify')
 
 class Player extends Connection {
   constructor (server, connection) {
@@ -16,29 +16,31 @@ class Player extends Connection {
     this.connection = connection
     this.options = server.options
 
-    Encrypt(this, server, server.options)
+    KeyExchange(this, server, server.options)
     Login(this, server, server.options)
     LoginVerify(this, server, server.options)
 
     this.startQueue()
     this.status = ClientStatus.Authenticating
-    this.inLog = (...args) => debug('S ->', ...args)
-    this.outLog = (...args) => debug('S <-', ...args)
+
+    if (isDebug) {
+      this.inLog = (...args) => debug('S ->', ...args)
+      this.outLog = (...args) => debug('S <-', ...args)
+    }
   }
 
-  getData () {
+  getUserData () {
     return this.userData
   }
 
   onLogin (packet) {
     const body = packet.data
-    // debug('Login body', body)
     this.emit('loggingIn', body)
 
     const clientVer = body.protocol_version
     if (this.server.options.protocolVersion) {
       if (this.server.options.protocolVersion < clientVer) {
-        this.sendDisconnectStatus('failed_client')
+        this.sendDisconnectStatus('failed_spawn')
         return
       }
     } else if (clientVer < Options.MIN_VERSION) {
@@ -47,28 +49,30 @@ class Player extends Connection {
     }
 
     // Parse login data
-    const authChain = JSON.parse(body.params.chain)
-    const skinChain = body.params.client_data
+    const tokens = body.params.tokens
+    const authChain = JSON.parse(tokens.identity)
+    const skinChain = tokens.client
 
     try {
-      var { key, userData, chain } = this.decodeLoginJWT(authChain.chain, skinChain) // eslint-disable-line
+      var { key, userData, skinData } = this.decodeLoginJWT(authChain.chain, skinChain) // eslint-disable-line
     } catch (e) {
       console.error(e)
-      // TODO: disconnect user
-      throw new Error('Failed to verify user')
+      console.debug(authChain.chain, skinChain)
+      this.disconnect('Server authentication error')
+      return
     }
-    console.log('Verified user', 'got pub key', key, userData)
 
-    this.emit('login', { user: userData.extraData }) // emit events for user
     this.emit('server.client_handshake', { key }) // internal so we start encryption
 
     this.userData = userData.extraData
+    this.skinData = skinData
     this.profile = {
       name: userData.extraData?.displayName,
       uuid: userData.extraData?.identity,
       xuid: userData.extraData?.xuid
     }
     this.version = clientVer
+    this.emit('login', { user: userData.extraData }) // emit events for user
   }
 
   /**
@@ -76,36 +80,38 @@ class Player extends Connection {
    * @param {string} playStatus
    */
   sendDisconnectStatus (playStatus) {
+    if (this.status === ClientStatus.Disconnected) return
     this.write('play_status', { status: playStatus })
-    this.close()
+    this.close('kick')
   }
 
   /**
    * Disconnects a client
    */
   disconnect (reason = 'Server closed', hide = false) {
-    if ([ClientStatus.Authenticating, ClientStatus.Initializing].includes(this.status)) {
-      this.sendDisconnectStatus('failed_server_full')
-    } else {
-      this.write('disconnect', {
-        hide_disconnect_screen: hide,
-        message: reason
-      })
-    }
-    this.close()
+    if (this.status === ClientStatus.Disconnected) return
+    this.write('disconnect', {
+      hide_disconnect_screen: hide,
+      message: reason
+    })
+    this.server.conLog('Kicked ', this.connection?.address, reason)
+    setTimeout(() => this.close('kick'), 100) // Allow time for message to be recieved.
   }
 
   // After sending Server to Client Handshake, this handles the client's
   // Client to Server handshake response. This indicates successful encryption
   onHandshake () {
-    // this.outLog('Sending login success!', this.status)
     // https://wiki.vg/Bedrock_Protocol#Play_Status
     this.write('play_status', { status: 'login_success' })
     this.status = ClientStatus.Initializing
     this.emit('join')
   }
 
-  close () {
+  close (reason) {
+    if (this.status !== ClientStatus.Disconnected) {
+      this.emit('close') // Emit close once
+      if (!reason) this.inLog?.('Client closed connection', this.connection?.address)
+    }
     this.q = []
     this.q2 = []
     clearInterval(this.loop)
@@ -115,20 +121,18 @@ class Player extends Connection {
   }
 
   readPacket (packet) {
-    // console.log('packet', packet)
     try {
       var des = this.server.deserializer.parsePacketBuffer(packet) // eslint-disable-line
     } catch (e) {
       this.disconnect('Server error')
-      console.warn('Packet parsing failed! Writing dump to ./packetdump.bin')
-      fs.writeFileSync('packetdump.bin', packet)
-      fs.writeFileSync('packetdump.txt', packet.toString('hex'))
-      throw e
+      fs.writeFile(`packetdump_${this.connection.address}_${Date.now()}.bin`, packet)
+      return
     }
+
+    this.inLog?.(des.data.name, serialize(des.data.params).slice(0, 200))
 
     switch (des.data.name) {
       case 'login':
-        // console.log(des)
         this.onLogin(des)
         return
       case 'client_to_server_handshake':
@@ -137,15 +141,18 @@ class Player extends Connection {
         break
       case 'set_local_player_as_initialized':
         this.status = ClientStatus.Initialized
-        this.inLog('Server client spawned')
+        this.inLog?.('Server client spawned')
         // Emit the 'spawn' event
         this.emit('spawn')
         break
       default:
-        // console.log('ignoring, unhandled')
+        if (this.status === ClientStatus.Disconnected || this.status === ClientStatus.Authenticating) {
+          this.inLog?.('ignoring', des.data.name)
+          return
+        }
     }
     this.emit(des.data.name, des.data.params)
   }
 }
 
-module.exports = { Player, ClientStatus }
+module.exports = { Player }

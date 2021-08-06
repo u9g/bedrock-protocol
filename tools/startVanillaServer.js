@@ -48,7 +48,7 @@ async function download (os, version, path = 'bds-') {
   get(found, 'bds.zip')
   console.info('⚡ Unzipping')
   // Unzip server
-  if (process.platform === 'linux') cp.execSync('unzip bds.zip')
+  if (process.platform === 'linux') cp.execSync('unzip bds.zip && chmod +777 ./bedrock_server')
   else cp.execSync('tar -xf bds.zip')
   return verStr
 }
@@ -82,8 +82,16 @@ async function startServer (version, onStart, options = {}) {
   await download(os, version, options.path)
   configure(options)
   const handle = run(!onStart)
+  handle.on('error', (...a) => {
+    console.warn('*** THE MINECRAFT PROCESS CRASHED ***', a)
+    handle.kill('SIGKILL')
+  })
   if (onStart) {
-    handle.stdout.on('data', data => data.includes('Server started.') ? onStart() : null)
+    let stdout = ''
+    handle.stdout.on('data', data => {
+      stdout += data
+      if (stdout.includes('Server started')) onStart()
+    })
     handle.stdout.pipe(process.stdout)
     handle.stderr.pipe(process.stdout)
   }
@@ -104,7 +112,7 @@ async function startServerAndWait (version, withTimeout, options) {
 
 if (!module.parent) {
   // if (process.argv.length < 3) throw Error('Missing version argument')
-  startServer(process.argv[2] || '1.16.201')
+  startServer(process.argv[2] || '1.16.201', null, process.argv[3] ? { 'server-port': process.argv[3], 'online-mode': !!process.argv[4] } : undefined)
 }
 
 module.exports = { fetchLatestStable, startServer, startServerAndWait }

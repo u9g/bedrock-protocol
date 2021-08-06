@@ -3,14 +3,15 @@ const vanillaServer = require('../tools/startVanillaServer')
 const { Client } = require('../src/client')
 const { waitFor } = require('../src/datatypes/util')
 const { ChunkColumn, Version } = require('bedrock-provider')
+const { CURRENT_VERSION } = require('../src/options')
 
 async function test (version) {
   // Start the server, wait for it to accept clients, throws on timeout
-  const handle = await vanillaServer.startServerAndWait(version, 1000 * 120)
+  const handle = await vanillaServer.startServerAndWait(version, 1000 * 220)
   console.log('Started server')
 
   const client = new Client({
-    hostname: '127.0.0.1',
+    host: '127.0.0.1',
     port: 19130,
     username: 'Notch',
     version,
@@ -18,6 +19,7 @@ async function test (version) {
   })
 
   console.log('Started client')
+  client.connect()
 
   let loop
 
@@ -65,5 +67,5 @@ async function test (version) {
   clearInterval(loop)
 }
 
-if (!module.parent) test()
+if (!module.parent) test(CURRENT_VERSION)
 module.exports = { clientTest: test }

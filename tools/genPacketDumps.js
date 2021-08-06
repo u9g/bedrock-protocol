@@ -17,20 +17,21 @@ function hasDumps (version) {
 
 let loop
 
-async function dump (version, force) {
+async function dump (version, force = true) {
   const random = ((Math.random() * 100) | 0)
   const port = 19130 + random
 
   const handle = await vanillaServer.startServerAndWait(version || CURRENT_VERSION, 1000 * 120, { 'server-port': port })
 
-  console.log('Started server')
+  console.log('Started dump server', version)
   const client = new Client({
-    hostname: '127.0.0.1',
+    host: '127.0.0.1',
     port,
+    version,
     username: 'Boat' + random,
     offline: true
   })
-
+  client.connect()
   return waitFor(async res => {
     const root = join(__dirname, `../data/${client.options.version}/sample/`)
     if (!fs.existsSync(root + 'packets') || !fs.existsSync(root + 'chunks')) {

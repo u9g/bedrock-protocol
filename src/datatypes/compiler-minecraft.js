@@ -37,27 +37,47 @@ SizeOf.restBuffer = ['native', (value) => {
 }]
 
 /**
+ * Encapsulated data with length prefix
+ */
+Read.encapsulated = ['parametrizable', (compiler, { lengthType, type }) => {
+  return compiler.wrapCode(`
+  const payloadSize = ${compiler.callType(lengthType, 'offset')}
+  const { value, size } = ctx.${type}(buffer, offset + payloadSize.size)
+  return { value, size: size + payloadSize.size }
+`.trim())
+}]
+Write.encapsulated = ['parametrizable', (compiler, { lengthType, type }) => {
+  return compiler.wrapCode(`
+  const buf = Buffer.allocUnsafe(buffer.length - offset)
+  const payloadSize = (ctx.${type})(value, buf, 0)
+  let size = (ctx.${lengthType})(payloadSize, buffer, offset)
+  size += buf.copy(buffer, size, 0, payloadSize)
+  return size
+`.trim())
+}]
+SizeOf.encapsulated = ['parametrizable', (compiler, { lengthType, type }) => {
+  return compiler.wrapCode(`
+    const payloadSize = (ctx.${type})(value)
+    return (ctx.${lengthType})(payloadSize) + payloadSize
+`.trim())
+}]
+
+/**
  * Read NBT until end of buffer or \0
  */
 Read.nbtLoop = ['context', (buffer, offset) => {
   const values = []
   while (buffer[offset] != 0) {
-    // console.log('offs',offset, buffer.length,buffer.slice(offset))
     const n = ctx.nbt(buffer, offset)
-    // console.log('read',n)
     values.push(n.value)
     offset += n.size
   }
-  // console.log('Ext',offset, buffer.length,buffer.slice(offset))
   return { value: values, size: buffer.length - offset }
 }]
 Write.nbtLoop = ['context', (value, buffer, offset) => {
   for (const val of value) {
-    // console.log('val',val,offset)
     offset = ctx.nbt(val, buffer, offset)
   }
-  // offset += 1
-  // console.log('writing 0', offset)
   buffer.writeUint8(0, offset)
   return offset + 1
 }]
@@ -70,11 +90,31 @@ SizeOf.nbtLoop = ['context', (value, buffer, offset) => {
 }]
 
 /**
+ * Read rotation float encoded as a byte
+ */
+Read.byterot = ['context', (buffer, offset) => {
+  const val = buffer.readUint8(offset)
+  return { value: (val * (360 / 256)), size: 1 }
+}]
+Write.byterot = ['context', (value, buffer, offset) => {
+  const val = (value / (360 / 256))
+  buffer.writeUint8(val, offset)
+  return offset + 1
+}]
+SizeOf.byterot = ['context', (value, buffer, offset) => {
+  return 1
+}]
+
+/**
  * NBT
  */
 Read.nbt = ['native', minecraft.nbt[0]]
 Write.nbt = ['native', minecraft.nbt[1]]
 SizeOf.nbt = ['native', minecraft.nbt[2]]
+
+Read.lnbt = ['native', minecraft.lnbt[0]]
+Write.lnbt = ['native', minecraft.lnbt[1]]
+SizeOf.lnbt = ['native', minecraft.lnbt[2]]
 
 /**
  * Bits
@@ -84,7 +124,7 @@ Read.bitflags = ['parametrizable', (compiler, { type, flags, shift, big }) => {
   let fstr = JSON.stringify(flags)
   if (Array.isArray(flags)) {
     fstr = '{'
-    flags.map((v,k) => fstr += `"${v}": ${big ? 1n << BigInt(k) : 1 << k}` + (big ? 'n,' : ','))
+    flags.map((v, k) => fstr += `"${v}": ${big ? 1n << BigInt(k) : 1 << k}` + (big ? 'n,' : ','))
     fstr += '}'
   } else if (shift) {
     fstr = '{'
@@ -106,7 +146,7 @@ Write.bitflags = ['parametrizable', (compiler, { type, flags, shift, big }) => {
   let fstr = JSON.stringify(flags)
   if (Array.isArray(flags)) {
     fstr = '{'
-    flags.map((v,k) => fstr += `"${v}": ${big ? 1n << BigInt(k) : 1 << k}` + (big ? 'n,' : ','))
+    flags.map((v, k) => fstr += `"${v}": ${big ? 1n << BigInt(k) : 1 << k}` + (big ? 'n,' : ','))
     fstr += '}'
   } else if (shift) {
     fstr = '{'
@@ -127,7 +167,7 @@ SizeOf.bitflags = ['parametrizable', (compiler, { type, flags, shift, big }) => 
   let fstr = JSON.stringify(flags)
   if (Array.isArray(flags)) {
     fstr = '{'
-    flags.map((v,k) => fstr += `"${v}": ${big ? 1n << BigInt(k) : 1 << k}` + (big ? 'n,' : ','))
+    flags.map((v, k) => fstr += `"${v}": ${big ? 1n << BigInt(k) : 1 << k}` + (big ? 'n,' : ','))
     fstr += '}'
   } else if (shift) {
     fstr = '{'

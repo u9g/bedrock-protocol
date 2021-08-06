@@ -2,6 +2,29 @@ const { ProtoDefCompiler, CompiledProtodef } = require('protodef').Compiler
 const { FullPacketParser, Serializer } = require('protodef')
 const { join } = require('path')
 
+class Parser extends FullPacketParser {
+  parsePacketBuffer (buffer) {
+    try {
+      return super.parsePacketBuffer(buffer)
+    } catch (e) {
+      console.error('While decoding', buffer.toString('hex'))
+      throw e
+    }
+  }
+
+  verify (deserialized, serializer) {
+    const { name, params } = deserialized.data
+    const oldBuffer = deserialized.fullBuffer
+    const newBuffer = serializer.createPacketBuffer({ name, params })
+    if (!newBuffer.equals(oldBuffer)) {
+      console.warn('New', newBuffer.toString('hex'))
+      console.warn('Old', oldBuffer.toString('hex'))
+      console.log('Failed to re-encode', name, params)
+      process.exit(1)
+    }
+  }
+}
+
 // Compiles the ProtoDef schema at runtime
 function createProtocol (version) {
   const protocol = require(join(__dirname, `../../data/${version}/protocol.json`)).types
@@ -20,11 +43,8 @@ function getProtocol (version) {
   compiler.addTypes(require(join(__dirname, '../datatypes/compiler-minecraft')))
   compiler.addTypes(require('prismarine-nbt/compiler-zigzag'))
 
-  const compile = (compiler, file) => {
-    global.native = compiler.native // eslint-disable-line
-    const { PartialReadError } = require('protodef/src/utils') // eslint-disable-line
-    return require(file)() // eslint-disable-line
-  }
+  global.PartialReadError = require('protodef/src/utils').PartialReadError
+  const compile = (compiler, file) => require(file)(compiler.native)
 
   return new CompiledProtodef(
     compile(compiler.sizeOfCompiler, join(__dirname, `../../data/${version}/size.js`)),
@@ -40,7 +60,7 @@ function createSerializer (version) {
 
 function createDeserializer (version) {
   const proto = getProtocol(version)
-  return new FullPacketParser(proto, 'mcpe_packet')
+  return new Parser(proto, 'mcpe_packet')
 }
 
 module.exports = {
